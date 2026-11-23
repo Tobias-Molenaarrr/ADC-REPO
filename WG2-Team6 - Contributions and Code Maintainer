@@ -1,0 +1,18 @@
+# WG2-Team6 — Contributions and Code Maintainer
+
+## Original Authors & Licence Attribution
+- **Original Authors:** Cristian Danescu-Niculescu-Mizil, Moritz Sudhof, Dan Jurafsky, Jure Leskovec, and Christopher Potts (Stanford Politeness API, ACL 2013; original repository: `sudhof/politeness`)[cite: 1, 2].
+- **Python 3 Port:** Benjamin Meyers (2017 refactor on the `python3` branch)[cite: 1, 2].
+- **Licence:** Apache License 2.0 (retained unmodified in `LICENSE`)[cite: 1, 2].
+
+## Summary of Changes Made by Workgroup 2, Team 6
+To make the `python3` branch runnable and reproducible on Python 3.13 with modern `scikit-learn` (1.x), Team 6 implemented the following updates[cite: 1, 2]:
+1. **Fixed Dependency & Error Handling (`model.py`):** Replaced broken two-argument `sys.stderr.write()` calls with single-string messages, switched version checks from string comparisons to integer tuples, and made `nltk` optional[cite: 1, 2].
+2. **Restored Pre-Trained SVM Loading (`model.py`):** Added `_CompatUnpickler` to resolve the renamed `sklearn.svm._classes` module and implemented `LinearPlattSVM` (including libsvm's two-class coupling refinement) to read stored linear weights and Platt-scaling parameters directly from legacy `scikit-learn` 0.18.1 pickles[cite: 1, 2].
+3. **Fixed Tokenizer & Lazy Iterator Bugs (`features/vectorizer.py`):** Added a regex-based fallback tokenizer when `nltk` is unavailable, converted lazy `map()`/`chain` iterators into concrete lists so unigrams are not exhausted before strategy extraction, and wrapped `filter()` in `list()` for Python 3 compatibility[cite: 1, 2].
+4. **Added Verification & Demo Scripts (`scripts/`):** Added `scripts/run_demo.py` to score `TEST_DOCUMENTS` across both the `master` and `python3` model sets and `scripts/check_linear_platt.py` to verify numerical equivalence against `scikit-learn`'s `SVC.predict_proba`[cite: 1, 2].
+
+## Team Members & Contributions (Workgroup 2, Team 6)
+- **Daniel van Lin (`s1169834`) — Lead Code Maintainer & Report Author:** Cloned the upstream repository, diagnosed Python 3.13 / `scikit-learn` compatibility issues, integrated the fixes into the `py313-compat` branch, executed the verification scripts, and authored the Code Exploration Report[cite: 2, 3].
+- **Tobias Molenaar (`s1172784`) — Repository Administrator & Git Workflow Coordinator:** Set up and managed the team GitHub repository (`Tobias-Molenaarrr/ADC-REPO`), configured branch structure and collaborator permissions, and documented the Git/GitHub workflow[cite: 2, 3].
+- **Salih Dag (`s1076668`) — Code Quality Reviewer & Documentation Lead:** Evaluated codebase architecture, FAIR principles, and limitations, reviewed inline code comments and outputs, and maintained the repository documentation[cite: 2, 3].
