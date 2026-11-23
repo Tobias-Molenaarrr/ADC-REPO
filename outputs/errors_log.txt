@@ -1,0 +1,29 @@
+### master branch: python3 model.py
+  File "/tmp/work/wt_master/model.py", line 112
+    print "===================="
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: Missing parentheses in call to 'print'. Did you mean print(...)?
+
+### python3 branch: python3 model.py
+Traceback (most recent call last):
+  File "/tmp/work/wt_py3/model.py", line 31, in <module>
+    import nltk
+ModuleNotFoundError: No module named 'nltk'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/work/wt_py3/model.py", line 33, in <module>
+    sys.stderr.write("Package not found: Politeness model requires python pack",
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     "age nltk\n")
+
+### python3 branch: python3 features/vectorizer.py (after stubbing nltk is not possible; shows import error)
+  File "/tmp/work/wt_py3/features/vectorizer.py", line 4, in <module>
+    import nltk
+ModuleNotFoundError: No module named 'nltk'
+
+### loading pickles with current scikit-learn (python3 branch)
+featunigrams.p entries: 0
+politeness-svm.p: ModuleNotFoundError: No module named 'sklearn.svm.classes'
+TypeError: TextIOWrapper.write() takes exactly one argument (2 given)

@@ -1,0 +1,20 @@
+Feature counts: master = 661 unigrams + 696 bigrams + 21 strategies = 1378 (SVM expects 1378), python3_branch = 0 unigrams + 1426 bigrams + 21 strategies = 1447 (SVM expects 1447)
+
+Doc  Human score   Request? P(polite) master   P(polite) python3 
+1    +0.7          True     0.719              0.554             
+2    +0.8          True     0.640              0.618             
+3    -0.7          True     0.034              0.048             
+4    -0.9          True     0.068              0.182             
+
+Doc 1: Have you found the answer for your question? If yes would you please s...
+   strategies detected: 2nd_person, Please, SUBJUNCTIVE
+   unigram/bigram features present: 22
+Doc 2: Sorry :) I dont want to hack the system!! :) is there another way?
+   strategies detected: 1st_person
+   unigram/bigram features present: 18
+Doc 3: What are you trying to do?  Why can't you just store the "Range"?
+   strategies detected: 2nd_person, Direct_question
+   unigram/bigram features present: 23
+Doc 4: This was supposed to have been moved to &lt;url&gt; per the cfd. why w...
+   strategies detected: Direct_question, HASHEDGE
+   unigram/bigram features present: 30

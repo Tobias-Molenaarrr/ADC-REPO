@@ -1,9 +1,31 @@
 import os
+import re
 import _pickle
 import string
-import nltk
 from itertools import chain
 from collections import defaultdict
+
+# [Team 6 changes, Nov 2026]
+#   1. nltk is optional. If it is missing we use a small regex tokenizer that
+#      imitates nltk's Treebank-style output (splits "don't" into "do", "n't").
+#      It is NOT identical to nltk.word_tokenize, so bigram matches (and thus
+#      scores) can differ slightly from a run with nltk installed.
+#   2. In Python 3, map() is lazy. The original code consumed `unigram_lists`
+#      while building the bigrams, so the unigrams were always EMPTY. That is
+#      also why the python3 branch ships an empty featunigrams.p. We now build
+#      real lists.
+try:
+    import nltk
+    _word_tokenize, _bigrams = nltk.word_tokenize, nltk.bigrams
+except ImportError:
+    _CONTRACTION = re.compile(r"(?i)(\w)(n't|'s|'m|'re|'ve|'ll|'d)\b")
+    _TOKEN = re.compile(r"n't|'(?:s|m|re|ve|ll|d)\b|\w+|[^\w\s]")
+
+    def _word_tokenize(text):
+        return _TOKEN.findall(_CONTRACTION.sub(r"\1 \2", text))
+
+    def _bigrams(tokens):
+        return list(zip(tokens, tokens[1:]))
 
 #### PACKAGE IMPORTS ###########################################################
 from features.politeness_strategies import get_politeness_strategy_features
@@ -14,11 +36,12 @@ LOCAL_DIR = os.path.split(__file__)[0]
 
 def get_unigrams_and_bigrams(document):
     """
-    Grabs unigrams and bigrams from document sentences. NLTK does the work.
+    Grabs unigrams and bigrams from document sentences (one list of tokens per
+    sentence; bigrams never span two sentences). Returns two plain lists.
     """
-    unigram_lists = map(lambda x: nltk.word_tokenize(x), document['sentences'])
-    bigrams = chain(*map(lambda x: nltk.bigrams(x), unigram_lists))
-    unigrams = chain(*unigram_lists)
+    unigram_lists = [_word_tokenize(s) for s in document['sentences']]
+    bigrams = list(chain(*[_bigrams(tokens) for tokens in unigram_lists]))
+    unigrams = list(chain(*unigram_lists))
 
     return unigrams, bigrams
 
@@ -74,7 +97,10 @@ class PolitenessFeatureVectorizer:
     def _get_term_features(self, document):
         # One binary feature per ngram in self.unigrams and self.bigrams
         unigrams, bigrams = get_unigrams_and_bigrams(document)
-        # Add unigrams to document for later use
+        # Add unigrams to document for later use by the term-based strategies
+        # (hedges, positive/negative words). [Team 6] This used to be an
+        # iterator that set() below exhausted, so those strategies always saw
+        # an empty word list and never fired. Now it is a list.
         document['unigrams'] = unigrams
         unigrams, bigrams = set(unigrams), set(bigrams)
         f = {}
@@ -131,7 +157,8 @@ if __name__ == "__main__":
         # Print summary of features that are present
         print("\n====================")
         print("Text: ", doc['text'])
-        print("\tUnigrams, Bigrams: %d" % len(filter(lambda x: f[x] > 0 and ("UNIGRAM_" in x or "BIGRAM_" in x), f.keys())))
+        # [Team 6] len(filter(...)) fails in Python 3 (filter is an iterator)
+        print("\tUnigrams, Bigrams: %d" % len(list(filter(lambda x: f[x] > 0 and ("UNIGRAM_" in x or "BIGRAM_" in x), f.keys()))))
         print("\tPoliteness Strategies: \n\t\t%s" % "\n\t\t".join(filter(lambda x: f[x] > 0 and "feature_politeness_" in x, f.keys())))
         print("\n")
 

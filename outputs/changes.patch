@@ -1,0 +1,407 @@
+diff --git a/features/vectorizer.py b/features/vectorizer.py
+index 556629d..e862ef8 100644
+--- a/features/vectorizer.py
++++ b/features/vectorizer.py
+@@ -1,10 +1,32 @@
+ import os
++import re
+ import _pickle
+ import string
+-import nltk
+ from itertools import chain
+ from collections import defaultdict
+ 
++# [Team 6 changes, Nov 2026]
++#   1. nltk is optional. If it is missing we use a small regex tokenizer that
++#      imitates nltk's Treebank-style output (splits "don't" into "do", "n't").
++#      It is NOT identical to nltk.word_tokenize, so bigram matches (and thus
++#      scores) can differ slightly from a run with nltk installed.
++#   2. In Python 3, map() is lazy. The original code consumed `unigram_lists`
++#      while building the bigrams, so the unigrams were always EMPTY. That is
++#      also why the python3 branch ships an empty featunigrams.p. We now build
++#      real lists.
++try:
++    import nltk
++    _word_tokenize, _bigrams = nltk.word_tokenize, nltk.bigrams
++except ImportError:
++    _CONTRACTION = re.compile(r"(?i)(\w)(n't|'s|'m|'re|'ve|'ll|'d)\b")
++    _TOKEN = re.compile(r"n't|'(?:s|m|re|ve|ll|d)\b|\w+|[^\w\s]")
++
++    def _word_tokenize(text):
++        return _TOKEN.findall(_CONTRACTION.sub(r"\1 \2", text))
++
++    def _bigrams(tokens):
++        return list(zip(tokens, tokens[1:]))
++
+ #### PACKAGE IMPORTS ###########################################################
+ from features.politeness_strategies import get_politeness_strategy_features
+ 
+@@ -14,11 +36,12 @@ LOCAL_DIR = os.path.split(__file__)[0]
+ 
+ def get_unigrams_and_bigrams(document):
+     """
+-    Grabs unigrams and bigrams from document sentences. NLTK does the work.
++    Grabs unigrams and bigrams from document sentences (one list of tokens per
++    sentence; bigrams never span two sentences). Returns two plain lists.
+     """
+-    unigram_lists = map(lambda x: nltk.word_tokenize(x), document['sentences'])
+-    bigrams = chain(*map(lambda x: nltk.bigrams(x), unigram_lists))
+-    unigrams = chain(*unigram_lists)
++    unigram_lists = [_word_tokenize(s) for s in document['sentences']]
++    bigrams = list(chain(*[_bigrams(tokens) for tokens in unigram_lists]))
++    unigrams = list(chain(*unigram_lists))
+ 
+     return unigrams, bigrams
+ 
+@@ -74,7 +97,10 @@ class PolitenessFeatureVectorizer:
+     def _get_term_features(self, document):
+         # One binary feature per ngram in self.unigrams and self.bigrams
+         unigrams, bigrams = get_unigrams_and_bigrams(document)
+-        # Add unigrams to document for later use
++        # Add unigrams to document for later use by the term-based strategies
++        # (hedges, positive/negative words). [Team 6] This used to be an
++        # iterator that set() below exhausted, so those strategies always saw
++        # an empty word list and never fired. Now it is a list.
+         document['unigrams'] = unigrams
+         unigrams, bigrams = set(unigrams), set(bigrams)
+         f = {}
+@@ -131,7 +157,8 @@ if __name__ == "__main__":
+         # Print summary of features that are present
+         print("\n====================")
+         print("Text: ", doc['text'])
+-        print("\tUnigrams, Bigrams: %d" % len(filter(lambda x: f[x] > 0 and ("UNIGRAM_" in x or "BIGRAM_" in x), f.keys())))
++        # [Team 6] len(filter(...)) fails in Python 3 (filter is an iterator)
++        print("\tUnigrams, Bigrams: %d" % len(list(filter(lambda x: f[x] > 0 and ("UNIGRAM_" in x or "BIGRAM_" in x), f.keys()))))
+         print("\tPoliteness Strategies: \n\t\t%s" % "\n\t\t".join(filter(lambda x: f[x] > 0 and "feature_politeness_" in x, f.keys())))
+         print("\n")
+ 
+diff --git a/model.py b/model.py
+index b5e0f0e..ce909e9 100644
+--- a/model.py
++++ b/model.py
+@@ -1,60 +1,149 @@
+ import sys
+ import os
+-import _pickle
++import pickle
++import warnings
+ 
+ # This file provides an interface to a pre-trained politeness SVM.
++#
++# [Team 6 changes, Nov 2026] Original code by Danescu-Niculescu-Mizil, Sudhof,
++# Jurafsky, Leskovec and Potts (Apache 2.0); Python 3 port by B. Meyers.
++#   1. sys.stderr.write() was called with TWO arguments (a comma instead of
++#      string concatenation), so the "package not found" message itself raised
++#      a TypeError. Messages are now single strings.
++#   2. nltk is optional: features/vectorizer.py has a small fallback tokenizer.
++#   3. The pickled SVM was saved with scikit-learn 0.15-0.18 and cannot be
++#      used by scikit-learn 1.x (module moved, private attributes changed).
++#      Because the kernel is linear we read the stored weights and apply the
++#      stored Platt-scaling parameters ourselves (see LinearPlattSVM).
+ 
+ #### CHECK DEPENDENCIES ########################################################
+-try:
+-    import numpy as np
+-except:
+-    sys.stderr.write("Package not found: Politeness model requires python pack",
+-                     "age numpy\n")
+-    sys.exit(2)
+-
+-try:
+-    import scipy
+-    from scipy.sparse import csr_matrix
+-except:
+-    sys.stderr.write("Package not found: Politeness model requires python pack",
+-                     "age scipy\n")
+-    sys.exit(2)
+-
+-try:
+-    import sklearn
+-except:
+-    sys.stderr.write("Package not found: Politeness model requires python pack",
+-                     "age scikit-learn\n")
+-    sys.exit(2)
+-
+-try:
+-    import nltk
+-except:
+-    sys.stderr.write("Package not found: Politeness model requires python pack",
+-                     "age nltk\n")
+-    sys.exit(2)
++def _require(module_name, pip_name):
++    """Import a module or exit with a readable message."""
++    try:
++        return __import__(module_name)
++    except ImportError:
++        sys.stderr.write("Package not found: Politeness model requires "
++                         "python package %s\n" % pip_name)
++        sys.exit(2)
++
++np = _require("numpy", "numpy")
++scipy = _require("scipy", "scipy")
++sklearn = _require("sklearn", "scikit-learn")
++from scipy import sparse
++from scipy.sparse import csr_matrix
++from scipy.special import expit
+ 
+ #### CHECK DEPENDENCY VERSIONS #################################################
+-
+-packages2versions = [("scikit-learn", sklearn, "0.18.1"),
+-                     ("numpy", np, "1.12.0"),
+-                     ("nltk", nltk, "3.2.1"),
+-                     ("scipy", scipy, "0.18.1")]
+-
+-for name, package, expected_v in packages2versions:
+-    if package.__version__ < expected_v:
+-        sys.stderr.write("Warning: package '%s', expected version >= %s, detec",
+-                         "ted %s. Code functionality not guaranteed.\n"
+-                         % (name, expected_v, package.__version__))
++# Versions are compared as integer tuples: the original string comparison
++# ("1.9" < "1.10" is False) gives wrong answers for two-digit version parts.
++def _version_tuple(v):
++    return tuple(int(p) for p in v.split(".")[:3] if p.isdigit())
++
++for _name, _package, _expected in [("scikit-learn", sklearn, "0.18.1"),
++                                   ("numpy", np, "1.12.0"),
++                                   ("scipy", scipy, "0.18.1")]:
++    if _version_tuple(_package.__version__) < _version_tuple(_expected):
++        sys.stderr.write("Warning: package '%s', expected version >= %s, "
++                         "detected %s. Code functionality not guaranteed.\n"
++                         % (_name, _expected, _package.__version__))
+ 
+ #### PACKAGE IMPORTS ###########################################################
+ from features.vectorizer import PolitenessFeatureVectorizer
+ 
++#### LOADING THE PRE-TRAINED SVM ###############################################
++def _dense(matrix):
++    """Return a numpy array whether the stored matrix is sparse or dense."""
++    return matrix.toarray() if sparse.issparse(matrix) else np.asarray(matrix)
++
++
++class _CompatUnpickler(pickle.Unpickler):
++    """Unpickle an SVC saved by an old scikit-learn: the class used to live in
++    sklearn.svm.classes, which newer versions renamed to sklearn.svm._classes."""
++    def find_class(self, module, name):
++        try:
++            return super().find_class(module, name)
++        except ImportError:
++            if module.startswith("sklearn.svm."):
++                return super().find_class("sklearn.svm._classes", name)
++            raise
++
++
++class LinearPlattSVM(object):
++    """Minimal stand-in for sklearn.svm.SVC(kernel='linear', probability=True).
++
++    Only the fitted arrays are used from the pickle, never SVC's methods, so it
++    does not depend on the scikit-learn version. libsvm's decision value is
++        f(x) = x . w + b,   w = sum_i alpha_i y_i x_i   (positive -> classes_[0])
++    and its binary probability is Platt scaling
++        P(classes_[0]) = 1 / (1 + exp(A*f + B)).
++    Here classes_ = [0, 1] = [impolite, polite], so predict_proba returns
++    [[P(impolite), P(polite)]] like the original model.
++    """
++    def __init__(self, svc):
++        d = vars(svc)
++        # '_dual_coef_' / '_intercept_' hold libsvm's raw (unflipped) values;
++        # older pickles only have 'dual_coef_' in the raw convention.
++        dual = _dense(d['_dual_coef_'] if '_dual_coef_' in d else d['dual_coef_'])
++        support_vectors = _dense(d['support_vectors_'])
++        assert list(d['classes_']) == [0, 1], "expected classes [impolite, polite]"
++        self.w = (dual @ support_vectors).ravel()
++        self.b = float(np.ravel(d['_intercept_'])[0])
++        self.A = float(np.ravel(d['probA_'])[0])
++        self.B = float(np.ravel(d['probB_'])[0])
++        self.n_features = self.w.shape[0]
++
++    def predict_proba(self, X):
++        f = np.ravel(X @ self.w + self.b)
++        r01 = expit(-(self.A * f + self.B))            # Platt scaling
++        r01 = np.clip(r01, 1e-7, 1 - 1e-7)             # libsvm's min_prob
++        p_impolite = np.array([_libsvm_two_class_coupling(r) for r in r01])
++        return np.column_stack([p_impolite, 1.0 - p_impolite])
++
++
++def _libsvm_two_class_coupling(r01):
++    """Port of libsvm's multiclass_probability() for k = 2 classes.
++
++    libsvm does not return the raw Platt probability for two classes: it runs a
++    short iterative refinement that stops once the error is below 0.005 / k, so
++    the result differs from the plain sigmoid by up to about 0.004. We repeat
++    it so that scores match what scikit-learn's SVC.predict_proba returned.
++    """
++    k, eps, max_iter = 2, 0.005 / 2, 100
++    r = [[0.0, r01], [1.0 - r01, 0.0]]
++    Q = [[r[1][0] ** 2, -r[1][0] * r[0][1]],
++         [-r[1][0] * r[0][1], r[0][1] ** 2]]
++    p = [1.0 / k, 1.0 / k]
++    for _ in range(max_iter):
++        Qp = [Q[t][0] * p[0] + Q[t][1] * p[1] for t in range(k)]
++        pQp = p[0] * Qp[0] + p[1] * Qp[1]
++        if max(abs(Qp[t] - pQp) for t in range(k)) < eps:
++            break
++        for t in range(k):
++            diff = (-Qp[t] + pQp) / Q[t][t]
++            p[t] += diff
++            pQp = (pQp + diff * (diff * Q[t][t] + 2 * Qp[t])) / (1 + diff) / (1 + diff)
++            for j in range(k):
++                Qp[j] = (Qp[j] + diff * Q[t][j]) / (1 + diff)
++                p[j] /= (1 + diff)
++    return p[0]
++
++
++def load_svm(path):
++    """Load a pickled politeness SVM (Python 2 era pickles need latin1)."""
++    with warnings.catch_warnings():
++        # scikit-learn warns that the pickle is from another version. We only
++        # read arrays from it, so the warning does not apply.
++        warnings.simplefilter("ignore")
++        with open(path, 'rb') as handle:
++            svc = _CompatUnpickler(handle, encoding='latin1', fix_imports=True).load()
++    return LinearPlattSVM(svc)
++
++
+ # Serialized model filename
+ MODEL_FILENAME = os.path.join(os.path.split(__file__)[0], 'politeness-svm.p')
+ 
+ # Load model, initialize vectorizer
+-clf = _pickle.load(open(MODEL_FILENAME, 'rb'), encoding='latin1', fix_imports=True)
++clf = load_svm(MODEL_FILENAME)
+ vectorizer = PolitenessFeatureVectorizer()
+ 
+ def score(request):
+diff --git a/scripts/check_linear_platt.py b/scripts/check_linear_platt.py
+new file mode 100644
+index 0000000..b71b640
+--- /dev/null
++++ b/scripts/check_linear_platt.py
+@@ -0,0 +1,39 @@
++"""
++Team 6 (WG2) check: does LinearPlattSVM (model.py) reproduce scikit-learn's own
++predict_proba? We train a fresh linear SVC with probability=True on random
++sparse binary data (the same kind of input the politeness model uses), wrap its
++fitted arrays the way the old pickles store them, and compare the outputs.
++
++    python scripts/check_linear_platt.py        (run from the repository root)
++"""
++import os
++import sys
++import types
++
++import numpy as np
++from scipy.sparse import csr_matrix
++from sklearn.svm import SVC
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++from model import LinearPlattSVM                      # noqa: E402
++
++rng = np.random.RandomState(0)
++X = csr_matrix((rng.rand(400, 60) < 0.15).astype(float))
++y = (np.asarray(X[:, :5].sum(axis=1)).ravel() + rng.rand(400) * 1.5 > 1.0).astype(int)
++
++svc = SVC(C=0.02, kernel="linear", probability=True, random_state=0).fit(X, y)
++
++# Present the fitted state in the layout of an old pickle (attribute names
++# 'probA_' / 'probB_' instead of the private '_probA' / '_probB').
++old_style = types.SimpleNamespace(
++    classes_=svc.classes_, _dual_coef_=svc._dual_coef_,
++    support_vectors_=svc.support_vectors_, _intercept_=svc._intercept_,
++    probA_=svc._probA, probB_=svc._probB)
++ours = LinearPlattSVM(old_style)
++
++expected = svc.predict_proba(X)
++actual = ours.predict_proba(X)
++print("max |difference| over %d rows: %.2e" % (len(y), np.abs(expected - actual).max()))
++assert np.allclose(expected, actual, atol=1e-6), "LinearPlattSVM disagrees with sklearn"
++print("OK: LinearPlattSVM matches sklearn %s predict_proba" %
++      __import__("sklearn").__version__)
+diff --git a/scripts/run_demo.py b/scripts/run_demo.py
+new file mode 100644
+index 0000000..5017383
+--- /dev/null
++++ b/scripts/run_demo.py
+@@ -0,0 +1,84 @@
++"""
++Team 6 (WG2) demo: score the four sample requests in test_documents.py with the
++two sets of pre-trained model files and print what the code finds.
++
++    python scripts/run_demo.py            (run from the repository root)
++
++The sample requests already contain dependency parses, so no Stanford CoreNLP
++server is needed. The two model sets are:
++  models/master          the model files from the original master branch
++  models/python3_branch  the model files shipped on the python3 branch
++"""
++import os
++import sys
++import _pickle
++
++import numpy as np
++from scipy.sparse import csr_matrix
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++
++import model                                         # noqa: E402  (our fixed loader)
++from features.vectorizer import PolitenessFeatureVectorizer   # noqa: E402
++from request_utils import check_is_request           # noqa: E402
++from test_documents import TEST_DOCUMENTS            # noqa: E402
++
++
++def load_list(path):
++    with open(path, "rb") as handle:
++        return _pickle.load(handle, encoding="latin1", fix_imports=True)
++
++
++def build(model_name):
++    """Return (vectorizer, svm) for one set of model files."""
++    folder = os.path.join(ROOT, "models", model_name)
++    vectorizer = PolitenessFeatureVectorizer()
++    vectorizer.unigrams = load_list(os.path.join(folder, "featunigrams.p"))
++    vectorizer.bigrams = load_list(os.path.join(folder, "featbigrams.p"))
++    svm = model.load_svm(os.path.join(folder, "politeness-svm.p"))
++    return vectorizer, svm
++
++
++def p_polite(vectorizer, svm, doc):
++    features = vectorizer.features(dict(doc))        # copy: features() adds keys
++    vector = [features[name] for name in sorted(features)]
++    assert len(vector) == svm.n_features, (len(vector), svm.n_features)
++    return svm.predict_proba(csr_matrix(np.asarray([vector])))[0][1], features
++
++
++def main():
++    models = {name: build(name) for name in ("master", "python3_branch")}
++    print("Feature counts: " + ", ".join(
++        "%s = %d unigrams + %d bigrams + 21 strategies = %d (SVM expects %d)" % (
++            n, len(v.unigrams), len(v.bigrams),
++            len(v.unigrams) + len(v.bigrams) + 21, s.n_features)
++        for n, (v, s) in models.items()))
++    print()
++    print("%-4s %-13s %-8s %-18s %-18s" % (
++        "Doc", "Human score", "Request?", "P(polite) master", "P(polite) python3"))
++    details = []
++    for i, doc in enumerate(TEST_DOCUMENTS, 1):
++        row, feats = [], None
++        for name, (vectorizer, svm) in models.items():
++            p, f = p_polite(vectorizer, svm, doc)
++            row.append(p)
++            if name == "master":
++                feats = f
++        print("%-4d %+-13.1f %-8s %-18.3f %-18.3f" % (
++            i, doc["score"], check_is_request(doc), row[0], row[1]))
++        details.append((i, doc["text"], feats))
++    print()
++    for i, text, feats in details:
++        fired = sorted(k.replace("feature_politeness_==", "").rstrip("=")
++                       for k, v in feats.items()
++                       if v and k.startswith("feature_politeness_"))
++        n_ngrams = sum(1 for k, v in feats.items()
++                       if v and (k.startswith("UNIGRAM_") or k.startswith("BIGRAM_")))
++        print("Doc %d: %s" % (i, text[:70] + ("..." if len(text) > 70 else "")))
++        print("   strategies detected: %s" % (", ".join(fired) or "none"))
++        print("   unigram/bigram features present: %d" % n_ngrams)
++
++
++if __name__ == "__main__":
++    main()
